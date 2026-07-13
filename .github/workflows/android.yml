@@ -1,4 +1,4 @@
-name: Build Knowledge Automation APKs
+name: Build Two APKs - One Download
 
 on:
   workflow_dispatch:
@@ -28,8 +28,8 @@ jobs:
 
       - name: Unzip bundle
         run: |
-          rm -rf bundle
-          mkdir bundle
+          rm -rf bundle apk-output
+          mkdir -p bundle apk-output
           unzip -q KnowledgeAutomationBundle.zip -d bundle
 
       - name: Build SearchBot
@@ -40,14 +40,19 @@ jobs:
         working-directory: bundle/AnswerAssistant
         run: gradle assembleDebug
 
-      - name: Upload SearchBot APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: KnowledgeSearchBot-APK
-          path: bundle/SearchBot/app/build/outputs/apk/debug/app-debug.apk
+      - name: Collect and rename APKs
+        run: |
+          cp bundle/SearchBot/app/build/outputs/apk/debug/app-debug.apk              apk-output/KnowledgeSearchBot.apk
 
-      - name: Upload AnswerAssistant APK
+          cp bundle/AnswerAssistant/app/build/outputs/apk/debug/app-debug.apk              apk-output/KnowledgeAnswerAssistant.apk
+
+          echo "Created APK files:"
+          ls -lh apk-output
+
+      - name: Upload both APKs together
         uses: actions/upload-artifact@v4
         with:
-          name: KnowledgeAnswerAssistant-APK
-          path: bundle/AnswerAssistant/app/build/outputs/apk/debug/app-debug.apk
+          name: KnowledgeAutomation-Two-APKs
+          path: apk-output/*.apk
+          if-no-files-found: error
+          retention-days: 30
