@@ -1,58 +1,37 @@
-name: Build Two APKs - One Download
+name: Build Knowledge Automation Final
 
 on:
   workflow_dispatch:
   push:
     paths:
-      - "KnowledgeAutomationBundle.zip"
+      - "KnowledgeAutomationFinal.zip"
       - ".github/workflows/android.yml"
 
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
-
-      - name: Set up Gradle 8.9
-        uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.9"
-
-      - name: Unzip bundle
-        run: |
-          rm -rf bundle apk-output
-          mkdir -p bundle apk-output
-          unzip -q KnowledgeAutomationBundle.zip -d bundle
-
-      - name: Build SearchBot
-        working-directory: bundle/SearchBot
+      - run: |
+          rm -rf project apk-output
+          mkdir -p project apk-output
+          unzip -q KnowledgeAutomationFinal.zip -d project
+      - working-directory: project/SearchBot
         run: gradle assembleDebug
-
-      - name: Build AnswerAssistant
-        working-directory: bundle/AnswerAssistant
+      - working-directory: project/AnswerAssistant
         run: gradle assembleDebug
-
-      - name: Collect and rename APKs
-        run: |
-          cp bundle/SearchBot/app/build/outputs/apk/debug/app-debug.apk              apk-output/KnowledgeSearchBot.apk
-
-          cp bundle/AnswerAssistant/app/build/outputs/apk/debug/app-debug.apk              apk-output/KnowledgeAnswerAssistant.apk
-
-          echo "Created APK files:"
-          ls -lh apk-output
-
-      - name: Upload both APKs together
-        uses: actions/upload-artifact@v4
+      - run: |
+          cp project/SearchBot/app/build/outputs/apk/debug/app-debug.apk apk-output/KnowledgeSearchBot.apk
+          cp project/AnswerAssistant/app/build/outputs/apk/debug/app-debug.apk apk-output/KnowledgeAnswerAssistant.apk
+      - uses: actions/upload-artifact@v4
         with:
-          name: KnowledgeAutomation-Two-APKs
+          name: KnowledgeAutomation-Final-APKs
           path: apk-output/*.apk
           if-no-files-found: error
-          retention-days: 30
