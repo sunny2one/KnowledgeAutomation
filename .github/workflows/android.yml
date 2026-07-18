@@ -1,37 +1,854 @@
-name: Build Knowledge Automation Final
+name: DreamToYou Clock Reservation APK
 
 on:
-  workflow_dispatch:
   push:
-    paths:
-      - "KnowledgeAutomationFinal.zip"
-      - ".github/workflows/android.yml"
+    branches: [ "main" ]
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "17"
-      - uses: gradle/actions/setup-gradle@v4
+          java-version: 17
+
+      - name: Create Android project
+        run: |
+          mkdir -p app/src/main/java/com/example/dreamtoyouclock
+          mkdir -p app/src/main/res/values
+
+          cat > settings.gradle <<'EOF'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+
+          rootProject.name = 'DreamToYouClockReservation'
+          include ':app'
+          EOF
+
+          cat > build.gradle <<'EOF'
+          plugins {
+              id 'com.android.application' version '8.5.2' apply false
+          }
+          EOF
+
+          cat > app/build.gradle <<'EOF'
+          plugins {
+              id 'com.android.application'
+          }
+
+          android {
+              namespace 'com.example.dreamtoyouclock'
+              compileSdk 35
+
+              defaultConfig {
+                  applicationId 'com.example.dreamtoyouclock'
+                  minSdk 23
+                  targetSdk 35
+                  versionCode 1
+                  versionName '1.0'
+              }
+          }
+          EOF
+
+          cat > app/src/main/AndroidManifest.xml <<'EOF'
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.INTERNET" />
+
+              <application
+                  android:label="DreamToYou Clock"
+                  android:theme="@style/AppTheme"
+                  android:usesCleartextTraffic="true">
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF
+
+          cat > app/src/main/res/values/styles.xml <<'EOF'
+          <resources>
+              <style name="AppTheme" parent="android:style/Theme.Material.Light.NoActionBar">
+                  <item name="android:windowNoTitle">true</item>
+                  <item name="android:windowActionBar">false</item>
+              </style>
+          </resources>
+          EOF
+
+          cat > app/src/main/java/com/example/dreamtoyouclock/MainActivity.java <<'EOF'
+          package com.example.dreamtoyouclock;
+
+          import android.app.Activity;
+          import android.content.SharedPreferences;
+          import android.graphics.Bitmap;
+          import android.graphics.Color;
+          import android.os.Bundle;
+          import android.os.Handler;
+          import android.os.Looper;
+          import android.os.SystemClock;
+          import android.view.Gravity;
+          import android.view.WindowManager;
+          import android.webkit.JsResult;
+          import android.webkit.WebChromeClient;
+          import android.webkit.WebSettings;
+          import android.webkit.WebView;
+          import android.webkit.WebViewClient;
+          import android.widget.Button;
+          import android.widget.CheckBox;
+          import android.widget.LinearLayout;
+          import android.widget.TextView;
+
+          import java.text.SimpleDateFormat;
+          import java.util.Calendar;
+          import java.util.Date;
+          import java.util.Locale;
+
+          public class MainActivity extends Activity {
+              private final Handler handler = new Handler(Looper.getMainLooper());
+
+              private WebView webView;
+              private CheckBox exactHourCheck;
+              private CheckBox generalTimeCheck;
+              private TextView statusText;
+              private TextView clockText;
+
+              private boolean running = false;
+              private boolean pageLoading = false;
+              private boolean reservationPage = false;
+              private boolean clickRunning = false;
+              private boolean popupHandling = false;
+              private boolean bookingProcessing = false;
+
+              private long lastRefresh = 0L;
+              private long lastDetect = 0L;
+              private long clickPauseUntil = 0L;
+              private long refreshBlockedUntil = 0L;
+
+              private String lastExactHourKey = "";
+              private int scheduledRefreshRetry = 0;
+              private boolean scheduledRefreshInProgress = false;
+
+              private static final String START_URL =
+                      "https://m.dmtu.kr/marketing/post_rev.php";
+
+              private static final long GENERAL_REFRESH_INTERVAL_MS = 1000L;
+              private static final long DETECT_INTERVAL_MS = 200L;
+              private static final long CLICK_REFRESH_BLOCK_MS = 6000L;
+
+              /*
+               * 기존 앱과 완전히 별개로 설치되도록:
+               * applicationId = com.example.dreamtoyouclock
+               * 앱 이름 = DreamToYou Clock
+               * APK 파일명 = DreamToYouClockReservation-v1.0-debug.apk
+               */
+
+              @Override
+              protected void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+
+                  getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+                  getWindow().setSoftInputMode(
+                          WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN);
+
+                  LinearLayout root = new LinearLayout(this);
+                  root.setOrientation(LinearLayout.VERTICAL);
+                  root.setBackgroundColor(Color.WHITE);
+
+                  webView = new WebView(this);
+                  WebSettings settings = webView.getSettings();
+                  settings.setJavaScriptEnabled(true);
+                  settings.setDomStorageEnabled(true);
+                  settings.setUseWideViewPort(true);
+                  settings.setLoadWithOverviewMode(true);
+                  settings.setCacheMode(WebSettings.LOAD_DEFAULT);
+
+                  webView.setWebViewClient(new WebViewClient() {
+                      @Override
+                      public void onPageStarted(WebView view, String url, Bitmap favicon) {
+                          pageLoading = true;
+                          reservationPage = isReservationUrl(url);
+                          super.onPageStarted(view, url, favicon);
+                      }
+
+                      @Override
+                      public void onPageFinished(WebView view, String url) {
+                          pageLoading = false;
+                          reservationPage = isReservationUrl(url);
+                          super.onPageFinished(view, url);
+
+                          if (scheduledRefreshInProgress) {
+                              if (reservationPage) {
+                                  scheduledRefreshInProgress = false;
+                                  scheduledRefreshRetry = 0;
+                                  statusText.setText(
+                                          "상태: 예약사이트 확인 / 감지·오토클릭 재개");
+                              } else if (scheduledRefreshRetry < 1) {
+                                  scheduledRefreshRetry++;
+                                  statusText.setText(
+                                          "상태: 예약사이트 미확인 / 즉시 2차 새로고침");
+                                  handler.postDelayed(
+                                          MainActivity.this::retryReservationPageOnce, 10L);
+                                  return;
+                              } else {
+                                  scheduledRefreshInProgress = false;
+                                  statusText.setText(
+                                          "상태: 예약사이트 아님 / 자동 기능 일시중지");
+                              }
+                          }
+
+                          if (running && reservationPage && isAutoClickAllowed()) {
+                              handler.postDelayed(() -> {
+                                  if (running
+                                          && reservationPage
+                                          && !pageLoading
+                                          && !clickRunning
+                                          && !popupHandling
+                                          && !bookingProcessing) {
+                                      runSmartAutoClick();
+                                  }
+                              }, 30L);
+                          }
+                      }
+                  });
+
+                  webView.setWebChromeClient(new WebChromeClient() {
+                      @Override
+                      public boolean onJsAlert(
+                              WebView view, String url, String message, JsResult result) {
+                          result.confirm();
+                          statusText.setText("상태: 알림창 확인 처리");
+                          return true;
+                      }
+
+                      @Override
+                      public boolean onJsConfirm(
+                              WebView view, String url, String message, JsResult result) {
+                          result.confirm();
+                          statusText.setText("상태: 확인창 확인 처리");
+                          return true;
+                      }
+                  });
+
+                  root.addView(
+                          webView,
+                          new LinearLayout.LayoutParams(
+                                  LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
+
+                  LinearLayout panel = new LinearLayout(this);
+                  panel.setOrientation(LinearLayout.VERTICAL);
+                  panel.setPadding(dp(16), dp(12), dp(16), dp(16));
+                  panel.setBackgroundColor(Color.rgb(245, 245, 245));
+
+                  TextView title = new TextView(this);
+                  title.setText("DreamToYou Clock 1.0");
+                  title.setTextSize(17);
+                  title.setTextColor(Color.rgb(25, 25, 25));
+                  panel.addView(title);
+
+                  clockText = new TextView(this);
+                  clockText.setTextSize(16);
+                  panel.addView(clockText);
+
+                  statusText = new TextView(this);
+                  statusText.setText("상태: 대기 중");
+                  statusText.setTextSize(15);
+                  panel.addView(statusText);
+
+                  exactHourCheck = new CheckBox(this);
+                  exactHourCheck.setText(
+                          "1. 매시간 00분 00초 정각 새로고침 + 지속 감지·오토클릭");
+                  panel.addView(exactHourCheck);
+
+                  generalTimeCheck = new CheckBox(this);
+                  generalTimeCheck.setText(
+                          "2. 매시간 06분 00초~53분 00초 일반 새로고침·감지·오토클릭");
+                  panel.addView(generalTimeCheck);
+
+                  LinearLayout buttons = new LinearLayout(this);
+                  buttons.setOrientation(LinearLayout.HORIZONTAL);
+                  buttons.setGravity(Gravity.CENTER);
+
+                  Button startButton = new Button(this);
+                  startButton.setText("시작");
+                  buttons.addView(startButton);
+
+                  Button stopButton = new Button(this);
+                  stopButton.setText("중지");
+                  buttons.addView(stopButton);
+
+                  Button manualRefreshButton = new Button(this);
+                  manualRefreshButton.setText("수동 새로고침");
+                  buttons.addView(manualRefreshButton);
+
+                  panel.addView(buttons);
+
+                  root.addView(
+                          panel,
+                          new LinearLayout.LayoutParams(
+                                  LinearLayout.LayoutParams.MATCH_PARENT,
+                                  LinearLayout.LayoutParams.WRAP_CONTENT));
+
+                  setContentView(root);
+                  loadSettings();
+
+                  exactHourCheck.setOnCheckedChangeListener(
+                          (buttonView, isChecked) -> saveSettings());
+                  generalTimeCheck.setOnCheckedChangeListener(
+                          (buttonView, isChecked) -> saveSettings());
+
+                  startButton.setOnClickListener(v -> {
+                      saveSettings();
+                      running = true;
+                      clickRunning = false;
+                      popupHandling = false;
+                      bookingProcessing = false;
+                      scheduledRefreshInProgress = false;
+                      scheduledRefreshRetry = 0;
+                      lastRefresh = System.currentTimeMillis();
+                      lastDetect = 0L;
+                      clickPauseUntil = 0L;
+                      refreshBlockedUntil = 0L;
+                      lastExactHourKey = "";
+                      statusText.setText("상태: 실행 중");
+                      scheduleNextExactHour();
+                  });
+
+                  stopButton.setOnClickListener(v -> {
+                      running = false;
+                      clickRunning = false;
+                      popupHandling = false;
+                      bookingProcessing = false;
+                      scheduledRefreshInProgress = false;
+                      scheduledRefreshRetry = 0;
+                      handler.removeCallbacks(exactHourRunnable);
+                      statusText.setText("상태: 중지됨");
+                      saveSettings();
+                  });
+
+                  manualRefreshButton.setOnClickListener(v -> {
+                      scheduledRefreshRetry = 0;
+                      scheduledRefreshInProgress = true;
+                      executeScheduledRefresh("상태: 수동 새로고침");
+                  });
+
+                  webView.loadUrl(START_URL);
+                  loop();
+              }
+
+              private int dp(int value) {
+                  float density = getResources().getDisplayMetrics().density;
+                  return (int) (value * density + 0.5f);
+              }
+
+              private boolean isReservationUrl(String url) {
+                  return url != null && url.contains("post_rev.php");
+              }
+
+              private void saveSettings() {
+                  SharedPreferences sp =
+                          getSharedPreferences("clock_reservation_settings", MODE_PRIVATE);
+                  sp.edit()
+                          .putBoolean("exactHour", exactHourCheck.isChecked())
+                          .putBoolean("generalTime", generalTimeCheck.isChecked())
+                          .apply();
+              }
+
+              private void loadSettings() {
+                  SharedPreferences sp =
+                          getSharedPreferences("clock_reservation_settings", MODE_PRIVATE);
+                  exactHourCheck.setChecked(sp.getBoolean("exactHour", false));
+                  generalTimeCheck.setChecked(sp.getBoolean("generalTime", false));
+              }
+
+              /*
+               * 1번 체크박스가 켜져 있으면 정각 이후에도 예약페이지에서
+               * 감지와 오토클릭은 계속 유지됩니다.
+               */
+              private boolean isAutoClickAllowed() {
+                  if (!running || !reservationPage) return false;
+
+                  if (exactHourCheck.isChecked()) {
+                      return true;
+                  }
+
+                  return generalTimeCheck.isChecked() && isGeneralWindow();
+              }
+
+              /*
+               * 06:00.000 이상, 53:00.000 미만
+               * 즉 06분 00초부터 52분 59초 999ms까지입니다.
+               */
+              private boolean isGeneralWindow() {
+                  Calendar c = Calendar.getInstance(Locale.KOREA);
+                  int minute = c.get(Calendar.MINUTE);
+                  int second = c.get(Calendar.SECOND);
+                  int millisecond = c.get(Calendar.MILLISECOND);
+
+                  long position =
+                          minute * 60_000L + second * 1_000L + millisecond;
+
+                  return position >= 6L * 60_000L
+                          && position < 53L * 60_000L;
+              }
+
+              private final Runnable exactHourRunnable = new Runnable() {
+                  @Override
+                  public void run() {
+                      if (running && exactHourCheck.isChecked()) {
+                          triggerExactHourRefresh();
+                      }
+                      scheduleNextExactHour();
+                  }
+              };
+
+              /*
+               * Handler를 다음 정각의 elapsedRealtime에 예약합니다.
+               * Android 스케줄링 특성상 실제 실행 시각은 기기 부하에 따라
+               * 수 ms 정도 늦어질 수 있습니다.
+               */
+              private void scheduleNextExactHour() {
+                  handler.removeCallbacks(exactHourRunnable);
+
+                  if (!running || !exactHourCheck.isChecked()) {
+                      return;
+                  }
+
+                  long nowWall = System.currentTimeMillis();
+
+                  Calendar next = Calendar.getInstance(Locale.KOREA);
+                  next.setTimeInMillis(nowWall);
+                  next.add(Calendar.HOUR_OF_DAY, 1);
+                  next.set(Calendar.MINUTE, 0);
+                  next.set(Calendar.SECOND, 0);
+                  next.set(Calendar.MILLISECOND, 0);
+
+                  long delay = Math.max(1L, next.getTimeInMillis() - nowWall);
+                  long targetElapsed = SystemClock.elapsedRealtime() + delay;
+
+                  handler.postAtTime(exactHourRunnable, targetElapsed);
+              }
+
+              private void triggerExactHourRefresh() {
+                  Date now = new Date();
+                  String key =
+                          new SimpleDateFormat("yyyyMMddHH", Locale.KOREA).format(now);
+
+                  if (key.equals(lastExactHourKey)) {
+                      return;
+                  }
+
+                  lastExactHourKey = key;
+
+                  if (!reservationPage) {
+                      statusText.setText(
+                              "상태: 예약사이트 아님 / 정각 기능 일시중지");
+                      return;
+                  }
+
+                  scheduledRefreshRetry = 0;
+                  scheduledRefreshInProgress = true;
+                  executeScheduledRefresh(
+                          "상태: 매시간 00분 00초 정각 새로고침");
+              }
+
+              private void executeScheduledRefresh(String status) {
+                  if (!reservationPage) {
+                      scheduledRefreshInProgress = false;
+                      statusText.setText(
+                              "상태: 예약사이트 아님 / 자동 기능 일시중지");
+                      return;
+                  }
+
+                  pageLoading = true;
+                  lastRefresh = System.currentTimeMillis();
+                  statusText.setText(status);
+                  webView.reload();
+              }
+
+              /*
+               * 1차 새로고침 후 예약사이트가 열리지 않았을 때만
+               * 즉시 한 번 더 START_URL을 엽니다. 최대 2회입니다.
+               */
+              private void retryReservationPageOnce() {
+                  if (!running && !scheduledRefreshInProgress) return;
+
+                  pageLoading = true;
+                  lastRefresh = System.currentTimeMillis();
+                  webView.loadUrl(START_URL);
+              }
+
+              private void loop() {
+                  handler.postDelayed(new Runnable() {
+                      @Override
+                      public void run() {
+                          long now = System.currentTimeMillis();
+
+                          String currentTime =
+                                  new SimpleDateFormat(
+                                          "HH:mm:ss.SSS", Locale.KOREA)
+                                          .format(new Date());
+                          clockText.setText("현재 시간: " + currentTime);
+
+                          String url = webView.getUrl();
+                          reservationPage = isReservationUrl(url);
+
+                          if (running) {
+                              if (!reservationPage) {
+                                  statusText.setText(
+                                          "상태: 예약사이트 아님 / 새로고침·감지·오토클릭 일시중지");
+                              } else {
+                                  /*
+                                   * 앱이 정각 예약 콜백을 아주 짧게 놓친 경우를 대비한
+                                   * 00:00.000~00:00.300 보조 검사입니다.
+                                   */
+                                  checkExactHourFallback(now);
+
+                                  if (generalTimeCheck.isChecked()
+                                          && isGeneralWindow()
+                                          && !pageLoading
+                                          && !clickRunning
+                                          && !popupHandling
+                                          && now > refreshBlockedUntil
+                                          && now - lastRefresh
+                                                  >= GENERAL_REFRESH_INTERVAL_MS) {
+                                      scheduledRefreshRetry = 0;
+                                      scheduledRefreshInProgress = true;
+                                      executeScheduledRefresh(
+                                              "상태: 06분~53분 일반 새로고침");
+                                  }
+
+                                  if (isAutoClickAllowed()
+                                          && !pageLoading
+                                          && !bookingProcessing
+                                          && !clickRunning
+                                          && !popupHandling
+                                          && now > clickPauseUntil
+                                          && now - lastDetect
+                                                  >= DETECT_INTERVAL_MS) {
+                                      runSmartAutoClick();
+                                      lastDetect = now;
+                                  }
+                              }
+                          }
+
+                          handler.postDelayed(this, 20L);
+                      }
+                  }, 20L);
+              }
+
+              private void checkExactHourFallback(long now) {
+                  if (!exactHourCheck.isChecked()) return;
+
+                  Calendar c = Calendar.getInstance(Locale.KOREA);
+                  int minute = c.get(Calendar.MINUTE);
+                  int second = c.get(Calendar.SECOND);
+                  int ms = c.get(Calendar.MILLISECOND);
+
+                  if (minute == 0 && second == 0 && ms <= 300) {
+                      triggerExactHourRefresh();
+                  }
+              }
+
+              private void checkPopupOnly() {
+                  if (!running || popupHandling || !reservationPage) return;
+
+                  String js =
+                          "(function(){"
+                                  + "try{"
+                                  + "var text=(document.body?document.body.innerText:'')||'';"
+                                  + "var popup=false;"
+                                  + "if(text.indexOf('현재 예약 진행중인 광고')>-1)popup=true;"
+                                  + "if(text.indexOf('예약이 확정된 이후에 예약시도')>-1)popup=true;"
+                                  + "if(text.indexOf('체크박스를 클릭하세요')>-1)popup=true;"
+                                  + "if(text.indexOf('24시간')>-1&&text.indexOf('열지않음')>-1)popup=true;"
+                                  + "if(text.indexOf('하루')>-1&&text.indexOf('열지않음')>-1)popup=true;"
+                                  + "if(text.indexOf('오늘')>-1&&text.indexOf('열지않음')>-1)popup=true;"
+                                  + "return popup?'HAS_POPUP':'NO_POPUP';"
+                                  + "}catch(e){return 'NO_POPUP';}"
+                                  + "})();";
+
+                  webView.evaluateJavascript(js, value -> {
+                      if (value != null && value.contains("HAS_POPUP")) {
+                          handlePopupDetected();
+                      }
+                  });
+              }
+
+              private void handlePopupDetected() {
+                  if (popupHandling) return;
+
+                  popupHandling = true;
+                  bookingProcessing = true;
+                  clickRunning = false;
+                  statusText.setText(
+                          "상태: 팝업 감지 / 체크·확인 처리");
+
+                  handler.postDelayed(() -> removePopupLayers(() -> {
+                      popupHandling = false;
+                      bookingProcessing = false;
+                      clickRunning = false;
+                      lastDetect = 0L;
+                      refreshBlockedUntil =
+                              System.currentTimeMillis() + CLICK_REFRESH_BLOCK_MS;
+
+                      statusText.setText(
+                              "상태: 팝업 처리 완료 / 오토클릭 재개 / 새로고침 6초 대기");
+
+                      if (isAutoClickAllowed()
+                              && !pageLoading
+                              && !clickRunning
+                              && !popupHandling
+                              && !bookingProcessing) {
+                          runSmartAutoClick();
+                      }
+                  }), 1000L);
+              }
+
+              /*
+               * 알림창, 체크박스, 확인/닫기, 팝업 레이어 처리 유지.
+               * 예약 버튼이나 금액 행은 팝업으로 제거하지 않습니다.
+               */
+              private void removePopupLayers(Runnable after) {
+                  String js =
+                          "(function(){"
+                                  + "try{"
+                                  + "function textOf(el){"
+                                  + "return (((el&&el.innerText)||'')+' '+((el&&el.textContent)||'')+' '+((el&&el.value)||'')+' '+((el&&el.title)||'')+' '+((el&&el.alt)||'')+' '+((el&&el.className)||'')+' '+((el&&el.id)||'')).replace(/\\s+/g,' ').trim();"
+                                  + "}"
+                                  + "function visible(el){"
+                                  + "if(!el)return false;"
+                                  + "var st=getComputedStyle(el);"
+                                  + "if(st.display==='none'||st.visibility==='hidden'||st.opacity==='0')return false;"
+                                  + "var r=el.getBoundingClientRect();"
+                                  + "return r.width>0&&r.height>0;"
+                                  + "}"
+                                  + "function reservationArea(el){"
+                                  + "var t=textOf(el).toLowerCase();"
+                                  + "if(t.indexOf('btn_rev')>-1||t.indexOf('btn_can')>-1)return true;"
+                                  + "if(t.indexOf('예약/신청')>-1||t.indexOf('예약하기')>-1||t.indexOf('신청하기')>-1)return true;"
+                                  + "if(/[0-9]{1,3}(,[0-9]{3})*\\s*원/.test(t))return true;"
+                                  + "if(t.indexOf('로딩')>-1||t.indexOf('loading')>-1||t.indexOf('잠시 기다려 주세요')>-1||t.indexOf('처리중')>-1||t.indexOf('처리 중')>-1)return true;"
+                                  + "return false;"
+                                  + "}"
+                                  + "function popupText(t){"
+                                  + "if(!t)return false;"
+                                  + "if(t.indexOf('현재 예약 진행중인 광고')>-1)return true;"
+                                  + "if(t.indexOf('예약이 확정된 이후에 예약시도')>-1)return true;"
+                                  + "if(t.indexOf('체크박스를 클릭하세요')>-1)return true;"
+                                  + "if(t.indexOf('24시간')>-1&&t.indexOf('열지않음')>-1)return true;"
+                                  + "if(t.indexOf('하루')>-1&&t.indexOf('열지않음')>-1)return true;"
+                                  + "if(t.indexOf('오늘')>-1&&t.indexOf('열지않음')>-1)return true;"
+                                  + "if(t.indexOf('닫기')>-1&&t.length<700)return true;"
+                                  + "if(t.indexOf('확인')>-1&&t.length<700)return true;"
+                                  + "return false;"
+                                  + "}"
+                                  + "function clickEl(el){"
+                                  + "if(!el)return false;"
+                                  + "try{el.scrollIntoView({block:'center',inline:'center'});}catch(e){}"
+                                  + "try{el.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,cancelable:true,view:window}));"
+                                  + "el.dispatchEvent(new MouseEvent('mouseup',{bubbles:true,cancelable:true,view:window}));"
+                                  + "el.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,view:window}));"
+                                  + "el.click();return true;}catch(e){return false;}"
+                                  + "}"
+                                  + "function controls(root){"
+                                  + "try{"
+                                  + "var cbs=root.querySelectorAll('input[type=checkbox]');"
+                                  + "for(var i=0;i<cbs.length;i++){"
+                                  + "if(visible(cbs[i])&&!cbs[i].checked){clickEl(cbs[i]);cbs[i].checked=true;cbs[i].dispatchEvent(new Event('change',{bubbles:true}));}"
+                                  + "}"
+                                  + "var all=root.querySelectorAll('button,input[type=button],input[type=submit],a,span,div');"
+                                  + "for(var j=0;j<all.length;j++){"
+                                  + "var b=all[j];if(!visible(b)||reservationArea(b))continue;"
+                                  + "var t=textOf(b).trim();"
+                                  + "if(t==='확인'||t==='닫기'||t==='close'||t==='Close'||(t.indexOf('확인')>-1&&t.length<30)||(t.indexOf('닫기')>-1&&t.length<30)){clickEl(b);break;}"
+                                  + "}"
+                                  + "}catch(e){}"
+                                  + "}"
+                                  + "var nodes=document.querySelectorAll('div,section,article,aside,form');"
+                                  + "var removed=0;"
+                                  + "for(var n=0;n<nodes.length;n++){"
+                                  + "var el=nodes[n];if(!visible(el)||reservationArea(el))continue;"
+                                  + "var txt=textOf(el);if(!popupText(txt))continue;"
+                                  + "controls(el);"
+                                  + "try{el.style.display='none';el.style.visibility='hidden';el.style.pointerEvents='none';el.remove();removed++;}catch(e){}"
+                                  + "}"
+                                  + "try{document.body.style.overflow='auto';document.documentElement.style.overflow='auto';}catch(e){}"
+                                  + "return 'POPUP_REMOVED_'+removed;"
+                                  + "}catch(e){return 'POPUP_ERROR_'+e;}"
+                                  + "})();";
+
+                  webView.evaluateJavascript(js, value -> {
+                      if (after != null) after.run();
+                  });
+              }
+
+              /*
+               * 금액 설정은 UI를 단순화하기 위해 기존 값으로 고정했습니다.
+               * 포함: 300,400,500,800,900,1000,1200,1500,2000,2500,3000,5000
+               * 제외: 300,400,500,1000
+               * 실제 클릭 대상: 5000,3000,2500,2000,1500,1200,900,800
+               */
+              private void runSmartAutoClick() {
+                  if (!running
+                          || !reservationPage
+                          || clickRunning
+                          || bookingProcessing
+                          || popupHandling) {
+                      return;
+                  }
+
+                  clickRunning = true;
+
+                  String js =
+                          "(function(){"
+                                  + "try{"
+                                  + "if((location.href||'').indexOf('post_rev.php')===-1)return 'NOT_POST_REV';"
+                                  + "var targets=[5000,3000,2500,2000,1500,1200,900,800];"
+                                  + "function clean(t){return (t||'').replace(/,/g,'').replace(/\\s+/g,' ').trim();}"
+                                  + "function amounts(t){"
+                                  + "var m=clean(t).match(/([0-9]{1,6})\\s*원/g),o=[];"
+                                  + "if(!m)return o;"
+                                  + "for(var i=0;i<m.length;i++){var n=m[i].replace(/[^0-9]/g,'');if(n)o.push(parseInt(n,10));}"
+                                  + "return o;"
+                                  + "}"
+                                  + "function hasAmount(t,a){var n=amounts(t);for(var i=0;i<n.length;i++)if(n[i]===a)return true;return false;}"
+                                  + "function visible(el){"
+                                  + "if(!el)return false;var s=getComputedStyle(el);"
+                                  + "if(s.display==='none'||s.visibility==='hidden'||s.opacity==='0'||s.pointerEvents==='none')return false;"
+                                  + "var r=el.getBoundingClientRect();return r.width>0&&r.height>0;"
+                                  + "}"
+                                  + "function disabled(el){"
+                                  + "if(!el||el.disabled)return true;"
+                                  + "if((el.getAttribute('aria-disabled')||'').toLowerCase()==='true')return true;"
+                                  + "var c=((el.className||'')+' '+(el.id||'')).toLowerCase();return c.indexOf('disabled')>-1;"
+                                  + "}"
+                                  + "function info(el){"
+                                  + "return ((el.src||'')+' '+(el.href||'')+' '+(el.className||'')+' '+(el.id||'')+' '+(el.alt||'')+' '+(el.title||'')+' '+(el.onclick||'')).toLowerCase();"
+                                  + "}"
+                                  + "function box(el){"
+                                  + "var c=el;"
+                                  + "for(var i=0;i<10&&c;i++){var tag=(c.tagName||'').toLowerCase(),t=(c.innerText||'').trim();if(t.indexOf('원')>-1||tag==='tr')return c;c=c.parentElement;}"
+                                  + "return el.parentElement||el;"
+                                  + "}"
+                                  + "function clickable(el){"
+                                  + "var p=el;"
+                                  + "for(var i=0;i<4&&p;i++){var tag=(p.tagName||'').toLowerCase();if(tag==='a'||tag==='button'||tag==='input'||p.onclick||info(p).indexOf('btn_rev')>-1)return p;p=p.parentElement;}"
+                                  + "return el;"
+                                  + "}"
+                                  + "function clickEl(el){"
+                                  + "if(!visible(el)||disabled(el))return false;"
+                                  + "try{el.scrollIntoView({block:'center',inline:'center'});}catch(e){}"
+                                  + "try{el.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,cancelable:true,view:window}));"
+                                  + "el.dispatchEvent(new MouseEvent('mouseup',{bubbles:true,cancelable:true,view:window}));"
+                                  + "el.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,view:window}));"
+                                  + "el.click();return true;}catch(e){return false;}"
+                                  + "}"
+                                  + "var buttons=document.querySelectorAll('img[src*=btn_rev],input[src*=btn_rev],a[href*=btn_rev],[onclick*=btn_rev],[class*=btn_rev],[id*=btn_rev]');"
+                                  + "for(var t=0;t<targets.length;t++){"
+                                  + "var amount=targets[t],c=[];"
+                                  + "for(var i=0;i<buttons.length;i++){"
+                                  + "var b=buttons[i];if(!visible(b)||disabled(b))continue;"
+                                  + "var inf=info(b);if(inf.indexOf('btn_rev')===-1||inf.indexOf('btn_can')>-1)continue;"
+                                  + "var bx=box(b);if(!bx||!visible(bx))continue;"
+                                  + "var txt=(bx.innerText||'').trim();"
+                                  + "if(txt.indexOf('최적화')>-1||txt.indexOf('원')===-1||!hasAmount(txt,amount))continue;"
+                                  + "c.push({btn:b,top:bx.getBoundingClientRect().top});"
+                                  + "}"
+                                  + "c.sort(function(a,b){return a.top-b.top;});"
+                                  + "for(var j=0;j<c.length;j++){var cl=clickable(c[j].btn);if(clickEl(cl))return 'CLICKED_'+amount;}"
+                                  + "}"
+                                  + "return 'NO_CLICKABLE_TARGET';"
+                                  + "}catch(e){return 'ERROR_'+e;}"
+                                  + "})();";
+
+                  webView.evaluateJavascript(js, value -> {
+                      clickRunning = false;
+
+                      if (value == null) {
+                          statusText.setText("상태: 감지 결과 없음");
+                          return;
+                      }
+
+                      if (value.contains("NOT_POST_REV")) {
+                          reservationPage = false;
+                          statusText.setText(
+                                  "상태: 예약사이트 아님 / 자동 기능 일시중지");
+                          return;
+                      }
+
+                      if (value.contains("CLICKED_")) {
+                          clickPauseUntil = System.currentTimeMillis() + 200L;
+                          refreshBlockedUntil =
+                                  System.currentTimeMillis()
+                                          + CLICK_REFRESH_BLOCK_MS;
+                          lastDetect = 0L;
+
+                          statusText.setText(
+                                  "상태: 높은 금액 우선 클릭 / 팝업 검사 / 새로고침 6초 대기");
+
+                          handler.postDelayed(this::checkPopupOnly, 200L);
+                          return;
+                      }
+
+                      if (value.contains("NO_CLICKABLE_TARGET")) {
+                          statusText.setText("상태: 클릭 가능한 대상 없음");
+                      } else {
+                          statusText.setText("상태: 조건 맞는 예약 버튼 없음");
+                      }
+                  });
+              }
+
+              @Override
+              protected void onDestroy() {
+                  handler.removeCallbacksAndMessages(null);
+                  if (webView != null) {
+                      webView.stopLoading();
+                      webView.destroy();
+                  }
+                  super.onDestroy();
+              }
+          }
+          EOF
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: "8.9"
-      - run: |
-          rm -rf project apk-output
-          mkdir -p project apk-output
-          unzip -q KnowledgeAutomationFinal.zip -d project
-      - working-directory: project/SearchBot
-        run: gradle assembleDebug
-      - working-directory: project/AnswerAssistant
-        run: gradle assembleDebug
-      - run: |
-          cp project/SearchBot/app/build/outputs/apk/debug/app-debug.apk apk-output/KnowledgeSearchBot.apk
-          cp project/AnswerAssistant/app/build/outputs/apk/debug/app-debug.apk apk-output/KnowledgeAnswerAssistant.apk
-      - uses: actions/upload-artifact@v4
+          gradle-version: 8.7
+
+      - name: Build APK
+        run: gradle :app:assembleDebug
+
+      - name: Rename APK
+        run: |
+          cp app/build/outputs/apk/debug/app-debug.apk \
+             app/build/outputs/apk/debug/DreamToYouClockReservation-v1.0-debug.apk
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
         with:
-          name: KnowledgeAutomation-Final-APKs
-          path: apk-output/*.apk
-          if-no-files-found: error
+          name: DreamToYouClockReservation-v1.0-apk
+          path: app/build/outputs/apk/debug/DreamToYouClockReservation-v1.0-debug.apk
