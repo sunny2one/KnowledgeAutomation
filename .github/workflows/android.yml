@@ -64,8 +64,8 @@ jobs:
                   applicationId 'com.example.dreamtoyouclock'
                   minSdk 23
                   targetSdk 35
-                  versionCode 1
-                  versionName '1.0'
+                  versionCode 2
+                  versionName '1.1'
               }
           }
           EOF
@@ -133,6 +133,9 @@ jobs:
               private WebView webView;
               private CheckBox exactHourCheck;
               private CheckBox generalTimeCheck;
+              private android.widget.EditText generalIntervalInput;
+              private android.widget.EditText generalStartHourInput;
+              private android.widget.EditText generalEndHourInput;
               private TextView statusText;
               private TextView clockText;
 
@@ -155,7 +158,6 @@ jobs:
               private static final String START_URL =
                       "https://m.dmtu.kr/marketing/post_rev.php";
 
-              private static final long GENERAL_REFRESH_INTERVAL_MS = 1000L;
               private static final long DETECT_INTERVAL_MS = 200L;
               private static final long CLICK_REFRESH_BLOCK_MS = 6000L;
 
@@ -163,7 +165,7 @@ jobs:
                * 기존 앱과 완전히 별개로 설치되도록:
                * applicationId = com.example.dreamtoyouclock
                * 앱 이름 = DreamToYou Clock
-               * APK 파일명 = DreamToYouClockReservation-v1.0-debug.apk
+               * APK 파일명 = DreamToYouClockReservation-v1.1-debug.apk
                */
 
               @Override
@@ -264,7 +266,7 @@ jobs:
                   panel.setBackgroundColor(Color.rgb(245, 245, 245));
 
                   TextView title = new TextView(this);
-                  title.setText("DreamToYou Clock 1.0");
+                  title.setText("DreamToYou Clock 1.1");
                   title.setTextSize(17);
                   title.setTextColor(Color.rgb(25, 25, 25));
                   panel.addView(title);
@@ -285,8 +287,56 @@ jobs:
 
                   generalTimeCheck = new CheckBox(this);
                   generalTimeCheck.setText(
-                          "2. 매시간 06분 00초~53분 00초 일반 새로고침·감지·오토클릭");
+                          "2. 설정 시간대 일반 새로고침·감지·오토클릭");
                   panel.addView(generalTimeCheck);
+
+                  generalIntervalInput = new android.widget.EditText(this);
+                  generalIntervalInput.setHint("일반 새로고침 간격(초) 예: 1");
+                  generalIntervalInput.setText("1");
+                  generalIntervalInput.setSingleLine(true);
+                  generalIntervalInput.setInputType(
+                          android.text.InputType.TYPE_CLASS_NUMBER);
+                  panel.addView(generalIntervalInput);
+
+                  LinearLayout timeRow = new LinearLayout(this);
+                  timeRow.setOrientation(LinearLayout.HORIZONTAL);
+                  timeRow.setGravity(Gravity.CENTER_VERTICAL);
+
+                  TextView startLabel = new TextView(this);
+                  startLabel.setText("시작 시각 ");
+                  timeRow.addView(startLabel);
+
+                  generalStartHourInput = new android.widget.EditText(this);
+                  generalStartHourInput.setHint("07");
+                  generalStartHourInput.setText("07");
+                  generalStartHourInput.setSingleLine(true);
+                  generalStartHourInput.setInputType(
+                          android.text.InputType.TYPE_CLASS_NUMBER);
+                  timeRow.addView(
+                          generalStartHourInput,
+                          new LinearLayout.LayoutParams(0, dp(52), 1f));
+
+                  TextView middleLabel = new TextView(this);
+                  middleLabel.setText(" 시 ~ 종료 시각 ");
+                  timeRow.addView(middleLabel);
+
+                  generalEndHourInput = new android.widget.EditText(this);
+                  generalEndHourInput.setHint("01");
+                  generalEndHourInput.setText("01");
+                  generalEndHourInput.setSingleLine(true);
+                  generalEndHourInput.setInputType(
+                          android.text.InputType.TYPE_CLASS_NUMBER);
+                  timeRow.addView(
+                          generalEndHourInput,
+                          new LinearLayout.LayoutParams(0, dp(52), 1f));
+
+                  panel.addView(timeRow);
+
+                  TextView timeHelp = new TextView(this);
+                  timeHelp.setText(
+                          "예: 07~01은 오전 7시부터 다음 날 오전 1시 직전까지 작동");
+                  timeHelp.setTextSize(13);
+                  panel.addView(timeHelp);
 
                   LinearLayout buttons = new LinearLayout(this);
                   buttons.setOrientation(LinearLayout.HORIZONTAL);
@@ -350,6 +400,7 @@ jobs:
                   });
 
                   manualRefreshButton.setOnClickListener(v -> {
+                      saveSettings();
                       scheduledRefreshRetry = 0;
                       scheduledRefreshInProgress = true;
                       executeScheduledRefresh("상태: 수동 새로고침");
@@ -374,6 +425,15 @@ jobs:
                   sp.edit()
                           .putBoolean("exactHour", exactHourCheck.isChecked())
                           .putBoolean("generalTime", generalTimeCheck.isChecked())
+                          .putString(
+                                  "generalInterval",
+                                  generalIntervalInput.getText().toString())
+                          .putString(
+                                  "generalStartHour",
+                                  generalStartHourInput.getText().toString())
+                          .putString(
+                                  "generalEndHour",
+                                  generalEndHourInput.getText().toString())
                           .apply();
               }
 
@@ -382,6 +442,12 @@ jobs:
                           getSharedPreferences("clock_reservation_settings", MODE_PRIVATE);
                   exactHourCheck.setChecked(sp.getBoolean("exactHour", false));
                   generalTimeCheck.setChecked(sp.getBoolean("generalTime", false));
+                  generalIntervalInput.setText(
+                          sp.getString("generalInterval", "1"));
+                  generalStartHourInput.setText(
+                          sp.getString("generalStartHour", "07"));
+                  generalEndHourInput.setText(
+                          sp.getString("generalEndHour", "01"));
               }
 
               /*
@@ -399,20 +465,56 @@ jobs:
               }
 
               /*
-               * 06:00.000 이상, 53:00.000 미만
-               * 즉 06분 00초부터 52분 59초 999ms까지입니다.
+               * 사용자가 지정한 시작 시각부터 종료 시각 직전까지 작동합니다.
+               *
+               * 예:
+               * 07~18 = 07:00:00 이상, 18:00:00 미만
+               * 07~01 = 07:00:00 이상 또는 다음 날 01:00:00 미만
+               * 00~00 = 하루 24시간
                */
               private boolean isGeneralWindow() {
+                  int startHour = parseHour(
+                          generalStartHourInput.getText().toString(), 7);
+                  int endHour = parseHour(
+                          generalEndHourInput.getText().toString(), 1);
+
                   Calendar c = Calendar.getInstance(Locale.KOREA);
-                  int minute = c.get(Calendar.MINUTE);
-                  int second = c.get(Calendar.SECOND);
-                  int millisecond = c.get(Calendar.MILLISECOND);
+                  int nowHour = c.get(Calendar.HOUR_OF_DAY);
 
-                  long position =
-                          minute * 60_000L + second * 1_000L + millisecond;
+                  if (startHour == endHour) {
+                      return true;
+                  }
 
-                  return position >= 6L * 60_000L
-                          && position < 53L * 60_000L;
+                  if (startHour < endHour) {
+                      return nowHour >= startHour && nowHour < endHour;
+                  }
+
+                  return nowHour >= startHour || nowHour < endHour;
+              }
+
+              private int parseHour(String value, int defaultValue) {
+                  try {
+                      int hour = Integer.parseInt(value.trim());
+                      if (hour < 0) return 0;
+                      if (hour > 23) return 23;
+                      return hour;
+                  } catch (Exception e) {
+                      return defaultValue;
+                  }
+              }
+
+              private long getGeneralRefreshIntervalMs() {
+                  int seconds = 1;
+                  try {
+                      seconds = Integer.parseInt(
+                              generalIntervalInput.getText().toString().trim());
+                  } catch (Exception ignored) {
+                  }
+
+                  if (seconds < 1) seconds = 1;
+                  if (seconds > 3600) seconds = 3600;
+
+                  return seconds * 1000L;
               }
 
               private final Runnable exactHourRunnable = new Runnable() {
@@ -534,11 +636,11 @@ jobs:
                                           && !popupHandling
                                           && now > refreshBlockedUntil
                                           && now - lastRefresh
-                                                  >= GENERAL_REFRESH_INTERVAL_MS) {
+                                                  >= getGeneralRefreshIntervalMs()) {
                                       scheduledRefreshRetry = 0;
                                       scheduledRefreshInProgress = true;
                                       executeScheduledRefresh(
-                                              "상태: 06분~53분 일반 새로고침");
+                                              "상태: 설정 시간대 일반 새로고침");
                                   }
 
                                   if (isAutoClickAllowed()
@@ -845,10 +947,10 @@ jobs:
       - name: Rename APK
         run: |
           cp app/build/outputs/apk/debug/app-debug.apk \
-             app/build/outputs/apk/debug/DreamToYouClockReservation-v1.0-debug.apk
+             app/build/outputs/apk/debug/DreamToYouClockReservation-v1.1-debug.apk
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: DreamToYouClockReservation-v1.0-apk
-          path: app/build/outputs/apk/debug/DreamToYouClockReservation-v1.0-debug.apk
+          name: DreamToYouClockReservation-v1.1-apk
+          path: app/build/outputs/apk/debug/DreamToYouClockReservation-v1.1-debug.apk
