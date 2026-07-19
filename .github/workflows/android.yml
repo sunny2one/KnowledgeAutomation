@@ -64,8 +64,8 @@ jobs:
                   applicationId 'com.example.dreamtoyouclock'
                   minSdk 23
                   targetSdk 35
-                  versionCode 2
-                  versionName '1.1'
+                  versionCode 3
+                  versionName '1.2'
               }
           }
           EOF
@@ -136,6 +136,9 @@ jobs:
               private android.widget.EditText generalIntervalInput;
               private android.widget.EditText generalStartHourInput;
               private android.widget.EditText generalEndHourInput;
+              private CheckBox unlimitedTimeCheck;
+              private android.widget.EditText unlimitedStartInput;
+              private android.widget.EditText unlimitedEndInput;
               private TextView statusText;
               private TextView clockText;
 
@@ -165,7 +168,7 @@ jobs:
                * 기존 앱과 완전히 별개로 설치되도록:
                * applicationId = com.example.dreamtoyouclock
                * 앱 이름 = DreamToYou Clock
-               * APK 파일명 = DreamToYouClockReservation-v1.1-debug.apk
+               * APK 파일명 = DreamToYouClockReservation-v1.2-debug.apk
                */
 
               @Override
@@ -266,7 +269,7 @@ jobs:
                   panel.setBackgroundColor(Color.rgb(245, 245, 245));
 
                   TextView title = new TextView(this);
-                  title.setText("DreamToYou Clock 1.1");
+                  title.setText("DreamToYou Clock 1.2");
                   title.setTextSize(17);
                   title.setTextColor(Color.rgb(25, 25, 25));
                   panel.addView(title);
@@ -338,6 +341,47 @@ jobs:
                   timeHelp.setTextSize(13);
                   panel.addView(timeHelp);
 
+                  unlimitedTimeCheck = new CheckBox(this);
+                  unlimitedTimeCheck.setText(
+                          "3. 무제한시간 사용 / 단독 작동 가능");
+                  panel.addView(unlimitedTimeCheck);
+
+                  LinearLayout unlimitedRow = new LinearLayout(this);
+                  unlimitedRow.setOrientation(LinearLayout.HORIZONTAL);
+                  unlimitedRow.setGravity(Gravity.CENTER_VERTICAL);
+
+                  TextView unlimitedStartLabel = new TextView(this);
+                  unlimitedStartLabel.setText("시작 ");
+                  unlimitedRow.addView(unlimitedStartLabel);
+
+                  unlimitedStartInput = new android.widget.EditText(this);
+                  unlimitedStartInput.setHint("10:58");
+                  unlimitedStartInput.setText("10:58");
+                  unlimitedStartInput.setSingleLine(true);
+                  unlimitedRow.addView(
+                          unlimitedStartInput,
+                          new LinearLayout.LayoutParams(0, dp(52), 1f));
+
+                  TextView unlimitedMiddleLabel = new TextView(this);
+                  unlimitedMiddleLabel.setText("  ~  종료 ");
+                  unlimitedRow.addView(unlimitedMiddleLabel);
+
+                  unlimitedEndInput = new android.widget.EditText(this);
+                  unlimitedEndInput.setHint("11:05");
+                  unlimitedEndInput.setText("11:05");
+                  unlimitedEndInput.setSingleLine(true);
+                  unlimitedRow.addView(
+                          unlimitedEndInput,
+                          new LinearLayout.LayoutParams(0, dp(52), 1f));
+
+                  panel.addView(unlimitedRow);
+
+                  TextView unlimitedHelp = new TextView(this);
+                  unlimitedHelp.setText(
+                          "무제한시간에는 다른 체크박스를 꺼도 새로고침·감지·오토클릭 단독 작동");
+                  unlimitedHelp.setTextSize(13);
+                  panel.addView(unlimitedHelp);
+
                   LinearLayout buttons = new LinearLayout(this);
                   buttons.setOrientation(LinearLayout.HORIZONTAL);
                   buttons.setGravity(Gravity.CENTER);
@@ -368,6 +412,8 @@ jobs:
                   exactHourCheck.setOnCheckedChangeListener(
                           (buttonView, isChecked) -> saveSettings());
                   generalTimeCheck.setOnCheckedChangeListener(
+                          (buttonView, isChecked) -> saveSettings());
+                  unlimitedTimeCheck.setOnCheckedChangeListener(
                           (buttonView, isChecked) -> saveSettings());
 
                   startButton.setOnClickListener(v -> {
@@ -434,6 +480,15 @@ jobs:
                           .putString(
                                   "generalEndHour",
                                   generalEndHourInput.getText().toString())
+                          .putBoolean(
+                                  "unlimitedTime",
+                                  unlimitedTimeCheck.isChecked())
+                          .putString(
+                                  "unlimitedStart",
+                                  unlimitedStartInput.getText().toString())
+                          .putString(
+                                  "unlimitedEnd",
+                                  unlimitedEndInput.getText().toString())
                           .apply();
               }
 
@@ -448,6 +503,12 @@ jobs:
                           sp.getString("generalStartHour", "07"));
                   generalEndHourInput.setText(
                           sp.getString("generalEndHour", "01"));
+                  unlimitedTimeCheck.setChecked(
+                          sp.getBoolean("unlimitedTime", false));
+                  unlimitedStartInput.setText(
+                          sp.getString("unlimitedStart", "10:58"));
+                  unlimitedEndInput.setText(
+                          sp.getString("unlimitedEnd", "11:05"));
               }
 
               /*
@@ -456,6 +517,10 @@ jobs:
                */
               private boolean isAutoClickAllowed() {
                   if (!running || !reservationPage) return false;
+
+                  if (isInUnlimitedTime()) {
+                      return true;
+                  }
 
                   if (exactHourCheck.isChecked()) {
                       return true;
@@ -515,6 +580,55 @@ jobs:
                   if (seconds > 3600) seconds = 3600;
 
                   return seconds * 1000L;
+              }
+
+              private int timeToMinutes(String value) {
+                  try {
+                      String[] parts = value.trim().split(":");
+                      if (parts.length != 2) return -1;
+
+                      int hour = Integer.parseInt(parts[0]);
+                      int minute = Integer.parseInt(parts[1]);
+
+                      if (hour < 0 || hour > 23) return -1;
+                      if (minute < 0 || minute > 59) return -1;
+
+                      return hour * 60 + minute;
+                  } catch (Exception e) {
+                      return -1;
+                  }
+              }
+
+              private boolean isMinuteRange(int now, int start, int end) {
+                  if (start < 0 || end < 0) return false;
+
+                  if (start == end) {
+                      return true;
+                  }
+
+                  if (start < end) {
+                      return now >= start && now < end;
+                  }
+
+                  return now >= start || now < end;
+              }
+
+              private boolean isInUnlimitedTime() {
+                  if (!unlimitedTimeCheck.isChecked()) {
+                      return false;
+                  }
+
+                  Calendar c = Calendar.getInstance(Locale.KOREA);
+                  int now =
+                          c.get(Calendar.HOUR_OF_DAY) * 60
+                                  + c.get(Calendar.MINUTE);
+
+                  int start = timeToMinutes(
+                          unlimitedStartInput.getText().toString());
+                  int end = timeToMinutes(
+                          unlimitedEndInput.getText().toString());
+
+                  return isMinuteRange(now, start, end);
               }
 
               private final Runnable exactHourRunnable = new Runnable() {
@@ -629,7 +743,18 @@ jobs:
                                    */
                                   checkExactHourFallback(now);
 
-                                  if (generalTimeCheck.isChecked()
+                                  if (isInUnlimitedTime()
+                                          && !pageLoading
+                                          && !clickRunning
+                                          && !popupHandling
+                                          && now > refreshBlockedUntil
+                                          && now - lastRefresh
+                                                  >= getGeneralRefreshIntervalMs()) {
+                                      scheduledRefreshRetry = 0;
+                                      scheduledRefreshInProgress = true;
+                                      executeScheduledRefresh(
+                                              "상태: 무제한시간 새로고침");
+                                  } else if (generalTimeCheck.isChecked()
                                           && isGeneralWindow()
                                           && !pageLoading
                                           && !clickRunning
@@ -947,10 +1072,10 @@ jobs:
       - name: Rename APK
         run: |
           cp app/build/outputs/apk/debug/app-debug.apk \
-             app/build/outputs/apk/debug/DreamToYouClockReservation-v1.1-debug.apk
+             app/build/outputs/apk/debug/DreamToYouClockReservation-v1.2-debug.apk
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: DreamToYouClockReservation-v1.1-apk
-          path: app/build/outputs/apk/debug/DreamToYouClockReservation-v1.1-debug.apk
+          name: DreamToYouClockReservation-v1.2-apk
+          path: app/build/outputs/apk/debug/DreamToYouClockReservation-v1.2-debug.apk
